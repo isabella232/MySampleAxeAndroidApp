@@ -1,0 +1,228 @@
+buildscript {
+    repositories {
+        jcenter()
+    }
+    dependencies {
+        classpath "org.jfrog.buildinfo:build-info-extractor-gradle:4.9.3"
+    }
+}
+
+plugins {
+    id "com.github.spotbugs" version "1.6.11"
+}
+
+apply plugin: 'java'
+
+def gitDescribe = { ->
+    def stdout = new ByteArrayOutputStream()
+
+    exec {
+        commandLine 'git', 'describe', '--tags'
+        standardOutput = stdout
+    }
+
+    return stdout.toString().trim()
+}
+
+def mavenVersion = { ->
+
+    if (gitDescribe().contains('-')) {
+        return "develop-SNAPSHOT"
+    } else {
+        return gitDescribe().toString()
+    }
+}
+
+def group = 'com.deque.android'
+def artifactId = 'axe-android'
+
+repositories {
+    google()
+    jcenter()
+    mavenCentral()
+}
+
+dependencies {
+
+    implementation fileTree(dir: 'libs', include: ['*.jar'])
+
+    implementation 'com.android.support:support-annotations:24.2.0'
+    implementation 'com.google.code.gson:gson:2.8.5'
+    implementation 'org.jetbrains:annotations:15.0'
+
+    testImplementation 'ar.com.hjg:pngj:2.1.0'
+    testImplementation 'junit:junit:4.12'
+    testImplementation 'org.mockito:mockito-core:2.7.22'
+}
+
+apply plugin: 'jacoco'
+
+jacoco {
+    toolVersion = "0.8.2"
+    reportsDir = file("$buildDir/jacoco")
+}
+
+tasks.withType(JacocoCoverageVerification) {
+    violationRules {
+        rule {
+            limit {
+                minimum = 0.85
+            }
+        }
+    }
+}
+
+task codeCoverage {
+    dependsOn 'clean'
+    dependsOn 'test'
+    dependsOn 'jacocoTestCoverageVerification'
+    dependsOn 'jacocoTestReport'
+}
+
+
+apply plugin: 'checkstyle'
+
+checkstyle {
+    toolVersion "8.18"
+}
+
+tasks.withType(Checkstyle) {
+    reports {
+        xml.enabled true
+        html.enabled true
+    }
+}
+
+dependencies {
+    spotbugsPlugins 'com.h3xstream.findsecbugs:findsecbugs-plugin:1.7.1'
+}
+
+spotbugs {
+    toolVersion = '3.1.12'
+}
+
+spotbugsTest.enabled = false
+
+// To generate an HTML report instead of XML
+tasks.withType(com.github.spotbugs.SpotBugsTask) {
+    reports.xml.enabled = false
+    reports.html.enabled = true
+}
+
+if (!(hasProperty('artifactory_username') && hasProperty('artifactory_apikey'))) {
+    print ("No artifactory Info. Publishing impossible.")
+    return
+}
+
+apply plugin: 'maven-publish'
+apply plugin: 'maven'
+apply plugin: 'signing'
+
+task javadocJar(type: Jar) {
+    classifier = 'javadoc'
+    from javadoc
+}
+
+task sourcesJar(type: Jar) {
+    classifier = 'sources'
+    from sourceSets.main.allSource
+}
+
+version = project.hasProperty('versionName') ? project.versionName : 'NOT_A_VERSION_NAME'
+
+if (!(hasProperty('DQ_MAVEN_CENTRAL_USERNAME') && hasProperty('DQ_MAVEN_CENTRAL_APIKEY'))) {
+    print ("No artifactory Info. Maven Central Publishing impossible.")
+    return
+}
+
+signing {
+    sign configurations.archives
+}
+
+uploadArchives {
+    repositories {
+        mavenDeployer {
+            beforeDeployment { MavenDeployment deployment -> signing.signPom(deployment) }
+
+            repository(url: "https://oss.sonatype.org/service/local/staging/deploy/maven2/") {
+                authentication(userName: "$DQ_MAVEN_CENTRAL_USERNAME", password: "$DQ_MAVEN_CENTRAL_APIKEY")
+            }
+
+            snapshotRepository(url: "https://oss.sonatype.org/content/repositories/snapshots/") {
+                authentication(userName: "$DQ_MAVEN_CENTRAL_USERNAME", password: "$DQ_MAVEN_CENTRAL_APIKEY")
+            }
+
+            pom.project {
+                name 'Axe Android'
+                groupId = group
+                artifactId
+                packaging 'jar'
+                version = version
+                description 'Axe for Android'
+                url 'https://github.com/dequelabs/axe-android'
+                licenses {
+                    license {
+                        name = 'LICENSE'
+                        url = 'https://github.com/dequelabs/axe-android/blob/develop/LICENSE'
+                    }
+                }
+
+                scm {
+                    connection 'scm:git:https://github.com/dequelabs/axe-android.git'
+                    developerConnection 'scm:git:ssh:git@github.com:dequelabs/axe-android.git'
+                    url 'https://github.com/dequelabs/axe-android'
+                }
+
+                developers {
+                    developer {
+                        id "chriscm2006"
+                        name "Chris McMeeking"
+                        email "chris.mcmeeking@deque.com"
+                    }
+                }
+            }
+        }
+    }
+}
+
+publishing {
+    publications {
+        maven(MavenPublication) {
+            groupId = group
+            artifactId
+            from components.java
+        }
+    }
+}
+
+artifacts {
+    archives jar, javadocJar, sourcesJar
+}
+
+apply plugin: 'com.jfrog.artifactory'
+
+artifactory {
+    contextUrl = 'https://agora.dequecloud.com/artifactory'
+
+    publish {
+
+        repository {
+            repoKey = 'axe-android'
+
+            // Set these in your gradle props to empty!
+            username = artifactory_username
+            password = artifactory_apikey
+        }
+
+        defaults {
+            publications('maven')
+            publishArtifacts = true
+        }
+    }
+
+    clientConfig.info.setBuildName(gitDescribe.toString())
+}
+
+artifactoryPublish {
+    dependsOn jar
+}

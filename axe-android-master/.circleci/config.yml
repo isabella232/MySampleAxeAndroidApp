@@ -1,0 +1,148 @@
+configure_machine: &configure_machine
+  docker:
+    - image: circleci/android:api-28-alpha
+
+save_repo: &save_repo
+  save_cache:
+    key: v{{ .Environment.repo_cache_key }}-repo-{{ .Branch }}-{{ .Revision }}
+    paths:
+      - .
+
+load_repo: &load_repo
+  restore_cache:
+    keys:
+      - v{{ .Environment.repo_cache_key }}-repo-{{ .Branch }}-{{ .Revision }}
+      - v{{ .Environment.repo_cache_key }}-repo-{{ .Branch }}
+      - v{{ .Environment.repo_cache_key }}-repo
+
+save_gradle_deps: &save_deps
+  save_cache:
+    key: v{{ .Environment.repo_cache_key }}-gradle_deps-{{ .Branch }}-{{ .Revision }}
+    paths:
+      - ~/.gradle/caches/
+
+save_gradle_wrapper: &save_gradle_wrapper
+  save_cache:
+    key: v{{ .Environment.repo_cache_key }}-gradle-wrapper-{{ checksum "gradle/wrapper/gradle-wrapper.properties" }}
+    paths:
+      - ~/.gradle/wrapper/
+
+load_gradle_wrapper: &load_gradle_wrapper
+  restore_cache:
+    keys:
+      - v{{ .Environment.repo_cache_key }}-gradle-wrapper-{{ checksum "gradle/wrapper/gradle-wrapper.properties" }}
+
+python_deps: &python_deps
+  run:
+    name: Install Python Packages
+    command: |
+      sudo apt-get update
+      sudo apt-get install python-pip
+      sudo pip install requests
+
+checkout_all: &checkout_all
+  run:
+    name: Checkout With all Submodules and Tags
+    command: |
+      git fetch --depth=2147483647
+      git fetch --tags
+      git submodule sync
+      git submodule update --init
+
+load_deps: &load_deps
+  restore_cache:
+    keys:
+      - v{{ .Environment.repo_cache_key }}-deps-{{ .Branch }}-{{ .Revision }}
+      - v{{ .Environment.repo_cache_key }}-deps-{{ .Branch }}
+      - v{{ .Environment.repo_cache_key }}-deps
+
+version: 2
+
+jobs:
+
+  Build and Test:
+    <<: *configure_machine
+    steps:
+      - *load_repo
+      - *python_deps
+      - checkout
+      - *checkout_all
+      - run:
+          name: Install Certs
+          command: .circleci/certs.sh
+      - *save_repo
+      - *load_deps
+      - *load_gradle_wrapper
+      - run:
+          name: Test
+          command: |
+            set -e
+            python -B .circleci/mobile-release-process/build_and_test.py
+      - *save_gradle_wrapper
+      - *save_deps
+      - store_artifacts:
+          path: .circleci/artifacts/dependency_report.txt
+          destination: dependency_report.txt
+      - store_artifacts:
+          path: build/reports/tests
+          destination: test-results
+      - store_test_results:
+          path: build/test-results
+
+  Publish Beta:
+    <<: *configure_machine
+    steps:
+      - *load_repo
+      - *python_deps
+      - checkout
+      - *checkout_all
+      - *load_deps
+      - *load_gradle_wrapper
+      - run:
+          name: Publish Beta
+          command: python -B .circleci/mobile-release-process/publish_release_candidate.py
+
+  Release:
+    <<: *configure_machine
+    steps:
+      - add_ssh_keys:
+          fingerprints:
+            - "bb:e9:c0:14:a4:f6:1d:2b:91:cb:0a:f0:aa:93:79:fc"
+      - checkout
+      - *python_deps
+      - *checkout_all
+      - *load_deps
+      - *load_gradle_wrapper
+      - run: python -B .circleci/mobile-release-process/publish_release.py
+
+workflows:
+  version: 2
+
+  Change Management:
+    jobs:
+      - Build and Test:
+          filters:
+            branches:
+              ignore:
+                - develop
+                - master
+
+  Publish Release Candidate:
+    jobs:
+      - Publish Beta:
+          filters:
+            branches:
+              only:
+                - develop
+
+  Publish Release:
+    jobs:
+      - Release:
+          context: mobile-team
+          filters:
+            tags:
+              only: /.*/
+            branches:
+              ignore: /.*/
+
+
